@@ -1,0 +1,171 @@
+name: Auto set overdue status in User Project #2
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "4 0 * * *"   # 7h04 sáng VN (0h UTC)
+
+jobs:
+  mark-overdue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      repository-projects: write
+      contents: read
+
+    steps:
+      - name: Check overdue items and update Status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.USER_PAT }}
+          script: |
+            const today = new Date().toISOString().slice(0,10);
+            console.log(`📅 Hôm nay: ${today}`);
+
+            // 1️⃣ Lấy toàn bộ task trong project
+            const projectQuery = `
+              query {
+                viewer {
+                  projectV2(number: 2) {
+                    id
+                    title
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on Issue { title number url }
+                          ... on PullRequest { title number url }
+                        }
+                        deadlineField: fieldValueByName(name: "Deadline") {
+                          __typename
+                          ... on ProjectV2ItemFieldDateValue { date }
+                        }
+                        statusField: fieldValueByName(name: "Status") {
+                          __typename
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            optionId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const res = await github.graphql(projectQuery);
+            const project = res.viewer.projectV2;
+            if (!project) {
+              console.log("❌ Không tìm thấy Project #2 (private?). Kiểm tra quyền USER_PAT.");
+              return;
+            }
+
+            console.log(`🗂️ Project: ${project.title}`);
+
+            const items = project.items.nodes;
+            const overdueItems = items.filter(item => {
+              const deadline = item.deadlineField?.date;
+              return deadline && new Date(deadline) < new Date(today);
+            });
+
+            console.log(`⏰ Có ${overdueItems.length} task trễ hạn.`);
+
+            // 2️⃣ Lấy fieldId và optionId của Status → Overdue
+            const fieldsQuery = `
+              query($projectId:ID!) {
+                node(id:$projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                          dataType
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                            color
+                            description
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            
+            const fieldRes = await github.graphql(fieldsQuery, { projectId: project.id });
+            const fields = fieldRes.node.fields.nodes;
+
+            const statusField = fields.find(f => f.name === "Status");
+            const overdueOption = statusField?.options?.find(o => o.name === "Overdue");
+            const doneOption = statusField?.options?.find(o => o.name === "Done");
+
+            if (!statusField) {
+              console.log("❌ Không tìm thấy field 'Status'.");
+              console.log("📋 Field list:", fields.map(f => f.name).join(", "));
+              return;
+            }
+            if (!overdueOption) {
+              console.log("❌ Không tìm thấy option 'Overdue' trong field 'Status'.");
+              console.log("📋 Options:", statusField.options.map(o => o.name).join(", "));
+              return;
+            }
+
+            const fieldId = statusField.id;
+            const overdueOptionId = overdueOption.id;
+            const doneOptionId = doneOption.id;
+
+            console.log(`🆔 Field ID: ${fieldId}`);
+            console.log(`🆔 Option ID (Overdue): ${overdueOptionId}`);
+            console.log(`🆔 Option ID (Done): ${doneOptionId}`);
+
+            // 3️⃣ Mutation cập nhật Status
+            const updateMutation = `
+              mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optionId:String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) {
+                  projectV2Item { id }
+                }
+              }
+            `;
+
+            // 4️⃣ Cập nhật từng task trễ hạn
+            for (const item of overdueItems) {
+              const title = item.content?.title || "(Không có tiêu đề)";
+              if (item.statusField?.name === "Overdue") {
+                console.log(`⏭️ Bỏ qua: ${title} (đã Overdue)`);
+                continue;
+              } else if (item.statusField?.name === "Done") {
+                console.log(`⏭️ Bỏ qua: ${title} (đã Done)`);
+                continue;
+              }
+
+              console.log(`⚙️ Update Status → Overdue: ${title}`);
+              try {
+                await github.graphql(updateMutation, {
+                  projectId: project.id,
+                  itemId: item.id,
+                  fieldId: fieldId,
+                  optionId: overdueOptionId,
+                });
+              } catch (err) {
+                console.log(`❌ Lỗi cập nhật ${title}: ${err.message}`);
+              }
+            }
+
+            console.log("✅ Hoàn tất cập nhật Status = Overdue cho tất cả task trễ hạn.");
