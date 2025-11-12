@@ -108,6 +108,7 @@ jobs:
             const statusField = fields.find(f => f.name === "Status");
             const overdueOption = statusField?.options?.find(o => o.name === "Overdue");
             const doneOption = statusField?.options?.find(o => o.name === "Done");
+            const delayedOption = statusField?.options?.find(o => o.name === "Delayed");    
 
             if (!statusField) {
               console.log("❌ Không tìm thấy field 'Status'.");
@@ -123,10 +124,12 @@ jobs:
             const fieldId = statusField.id;
             const overdueOptionId = overdueOption.id;
             const doneOptionId = doneOption.id;
+            const delayedOptionId = delayedOption.id;
 
             console.log(`🆔 Field ID: ${fieldId}`);
             console.log(`🆔 Option ID (Overdue): ${overdueOptionId}`);
             console.log(`🆔 Option ID (Done): ${doneOptionId}`);
+            console.log(`🆔 Option ID (Delayed): ${delayedOptionId}`);
 
             // 3️⃣ Mutation cập nhật Status
             const updateMutation = `
@@ -152,6 +155,9 @@ jobs:
                 continue;
               } else if (item.statusField?.name === "Done") {
                 console.log(`⏭️ Bỏ qua: ${title} (đã Done)`);
+                continue;
+              } else if (item.statusField?.name === "Delayed") {
+                console.log(`⏭️ Bỏ qua: ${title} (đã Delayed)`);
                 continue;
               }
 
